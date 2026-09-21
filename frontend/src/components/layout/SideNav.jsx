@@ -1,7 +1,11 @@
 import { NavLink } from 'react-router-dom'
 import { NAV_ITEMS } from '../../constants/index.js'
+import { useAuth } from '../../hooks/useAuth.jsx'
 
 export default function SideNav() {
+  const { currentUser } = useAuth()
+  const items = NAV_ITEMS.filter((item) => !item.adminOnly || currentUser?.is_admin)
+
   return (
     <aside className="sidebar">
       <div className="brand">
@@ -12,7 +16,7 @@ export default function SideNav() {
         </div>
       </div>
       <nav className="nav">
-        {NAV_ITEMS.map((item) => (
+        {items.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

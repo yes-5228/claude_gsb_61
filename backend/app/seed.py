@@ -3,7 +3,60 @@ import random
 from datetime import date, datetime, timedelta
 
 from .extensions import db
-from .models import Exceedance, Measurement, Station
+from .models import Exceedance, Measurement, Position, PositionScope, ScopePollutant, Station, User
+
+# 演示岗位 / 人员 (令牌固定, 便于直接使用)
+DEMO_POSITIONS = [
+    {
+        "code": "ADMIN", "name": "系统管理员",
+        "description": "负责岗位与录入权限配置, 不直接承担点位录入",
+        "all_stations": True, "all_pollutants": True,
+    },
+    {
+        "code": "FUTIAN_OP", "name": "福田区录入员",
+        "description": "仅可录入市民中心站的常规气态因子",
+        "station_codes": ["SZ-AQ-001"],
+        "pollutants": ["SO2", "NO2", "CO", "O3"],
+    },
+    {
+        "code": "NANSHAN_OP", "name": "南山区录入员",
+        "description": "可录入南山片区站点的全部因子",
+        "station_codes": ["SZ-AQ-002", "SZ-AQ-008"],
+        "pollutants": None,  # None 表示全部因子
+    },
+    {
+        "code": "PM_ONLY", "name": "颗粒物专员",
+        "description": "各点位仅可录入 PM2.5 / PM10",
+        "station_codes": None,  # None 表示全部点位
+        "pollutants": ["PM25", "PM10"],
+    },
+    {
+        "code": "READONLY", "name": "停用观察岗",
+        "description": "岗位停用后其成员立即失去全部录入权限",
+        "station_codes": [],
+        "pollutants": [],
+        "inactive": True,
+    },
+]
+
+DEMO_USERS = [
+    # username, name, position_code, is_admin, is_active
+    ("admin", "管理员", "ADMIN", True, True),
+    ("lijing", "李静", "FUTIAN_OP", False, True),
+    ("wangmin", "王敏", "NANSHAN_OP", False, True),
+    ("chenzq", "陈志强", "PM_ONLY", False, True),
+    ("zhaoyu", "赵宇", "FUTIAN_OP", False, True),
+    ("sunqian", "孙倩", "READONLY", False, False),  # 被停用的账号
+]
+
+DEMO_USER_TOKENS = {
+    "admin": "demo-token-admin",
+    "lijing": "demo-token-lijing",
+    "wangmin": "demo-token-wangmin",
+    "chenzq": "demo-token-chenzq",
+    "zhaoyu": "demo-token-zhaoyu",
+    "sunqian": "demo-token-sunqian",
+}
 
 DEMO_STATIONS = [
     {
@@ -75,6 +128,49 @@ def _value(pollutant, period, station_type, rng):
     return round(value, 2 if pollutant == "CO" else 1)
 
 
+def _seed_positions_and_users(stations_by_code):
+    """创建演示岗位 (含一版从当下生效的口径) 与人员账号。"""
+    positions = {}
+    for spec in DEMO_POSITIONS:
+        position = Position(
+            code=spec["code"], name=spec["name"], description=spec["description"],
+            is_active=not spec.get("inactive", False),
+        )
+        db.session.add(position)
+        db.session.flush()
+
+        all_stations = spec.get("station_codes") is None
+        all_pollutants = spec.get("pollutants") is None
+        scope = PositionScope(
+            position_id=position.id,
+            effective_from=datetime.now(),
+            all_stations=all_stations,
+            all_pollutants=all_pollutants,
+            remark="初始口径",
+        )
+        db.session.add(scope)
+        db.session.flush()
+        if not all_stations:
+            scope.stations = [
+                stations_by_code[code] for code in spec["station_codes"] if code in stations_by_code
+            ]
+        if not all_pollutants:
+            scope.pollutant_codes = [ScopePollutant(pollutant=code) for code in spec["pollutants"]]
+        positions[spec["code"]] = position
+    db.session.commit()
+
+    for username, name, position_code, is_admin, is_active in DEMO_USERS:
+        db.session.add(
+            User(
+                username=username, name=name,
+                token=DEMO_USER_TOKENS[username],
+                is_active=is_active, is_admin=is_admin,
+                position_id=positions[position_code].id,
+            )
+        )
+    db.session.commit()
+
+
 def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
     """Generate demo stations and monitoring records through the normal service path."""
     from .services import measurement_service
@@ -86,6 +182,9 @@ def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
         db.session.add(station)
         created_stations.append(station)
     db.session.commit()
+    stations_by_code = {station.code: station for station in created_stations}
+
+    _seed_positions_and_users(stations_by_code)
 
     today = date.today()
     totals = {"stations": len(created_stations), "measurements": 0, "exceedances": 0}
@@ -104,6 +203,7 @@ def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
                 data_source="device",
                 recorder=rng.choice(recorder_pool),
                 remark="日均值自动汇总",
+                enforce_scope=False,
             )
             totals["measurements"] += result["summary"]["created_count"]
             totals["exceedances"] += result["summary"]["exceeded_count"]
@@ -118,8 +218,9 @@ def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
                     measured_at=datetime(day.year, day.month, day.day, hour, 0),
                     period="hourly",
                     entries=hourly_entries,
-                    data_source="manual",
+                    data_source="import",
                     recorder=rng.choice(recorder_pool),
+                    enforce_scope=False,
                 )
                 totals["measurements"] += result["summary"]["created_count"]
                 totals["exceedances"] += result["summary"]["exceeded_count"]

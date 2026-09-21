@@ -1,4 +1,6 @@
 """监测数据记录."""
+from datetime import datetime
+
 from ..domain.constants import DATA_SOURCE_LABELS, PERIOD_LABELS, label_of
 from ..domain.standards import get_pollutant
 from ..extensions import db
@@ -29,6 +31,21 @@ class Measurement(TimestampMixin, db.Model):
     data_source = db.Column(db.String(16), nullable=False, default="manual")
     recorder = db.Column(db.String(64))
     remark = db.Column(db.Text)
+
+    # ---- 录入审计与口径快照 ------------------------------------------------
+    # operator_*: 实际执行提交的登录人 (代录时为代录人), 服务端写入、不可伪造;
+    # recorder_id/recorder: 名义录入人; is_proxy=True 表示代录;
+    # submitted_at: 服务端接收提交的时间 (与业务监测时间 measured_at 区分);
+    # position_id/scope_id: 写入当时依据的岗位口径版本, 历史归属不再随后续调整改变。
+    operator_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    operator_name = db.Column(db.String(64))
+    recorder_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="SET NULL"),
+                            nullable=True, index=True)
+    is_proxy = db.Column(db.Boolean, nullable=False, default=False)
+    submitted_at = db.Column(db.DateTime, nullable=False, default=datetime.now, index=True)
+    position_id = db.Column(db.Integer, nullable=True, index=True)
+    scope_id = db.Column(db.Integer, nullable=True, index=True)
 
     station = db.relationship("Station", back_populates="measurements")
     exceedance = db.relationship(
@@ -61,6 +78,13 @@ class Measurement(TimestampMixin, db.Model):
             "data_source_label": label_of(DATA_SOURCE_LABELS, self.data_source),
             "recorder": self.recorder,
             "remark": self.remark,
+            "operator_id": self.operator_id,
+            "operator_name": self.operator_name,
+            "recorder_id": self.recorder_id,
+            "is_proxy": bool(self.is_proxy),
+            "submitted_at": iso(self.submitted_at),
+            "position_id": self.position_id,
+            "scope_id": self.scope_id,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),
             "exceedance_id": self.exceedance.id if self.exceedance else None,

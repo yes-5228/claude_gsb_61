@@ -17,7 +17,9 @@
 设计要点:
 
 - **超标自动判定**: 数据写入时即按“因子 + 数据周期”取用限值, 计算超标倍数并分级, 同步生成待标注超标记录; 修正数据后超标记录自动更新或撤销。
-- **业务规则集中在后端**: 限值与分级规则位于 `backend/app/domain/`, 前端仅做展示与前置校验, 避免规则分叉。
+- **岗位录入权限**: 不同岗位可录入的**监测点范围与因子范围**不同; 范围以“带生效时间的口径版本”登记, 调整只影响此后录入, 历史数据按登记当时口径归属。停用/调岗实时生效, 权限判定在服务端逐次现查, 绕过页面直接提交接口同样被拦截。
+- **录入审计自动留痕**: 实际提交人(登录人)、提交时间、数据来源全部由服务端带出, 请求体无法伪造; 选择他人作为名义录入人即**代录**, 自动标注实际提交人。
+- **业务规则集中在后端**: 限值、分级规则与权限校验位于 `backend/app/domain/`、`backend/app/services/`, 前端仅做展示与前置校验, 避免规则分叉。
 - **模块化组织**: 后端按 `api / services / models / domain / utils` 分层; 前端每个业务模块独占目录, 公共能力沉淀在 `components/`、`hooks/`、`api/`。
 
 ## 技术栈
@@ -28,7 +30,7 @@
 | 数据库 | SQLite(默认, 零依赖) / PostgreSQL 16(可选, compose 覆盖文件) |
 | 前端 | React 18 · React Router 6 · Vite 7 · Axios · 原生 CSS(设计令牌 + 组件类) |
 | 部署 | Docker 多阶段构建 · Nginx 静态托管与 `/api` 反向代理 · docker compose |
-| 测试 | Pytest(43 个后端用例: 接口 + 领域规则) |
+| 测试 | Pytest(66 个后端用例: 接口 + 领域规则 + 岗位录入权限) |
 
 ## 目录结构
 
@@ -151,15 +153,23 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 | GET | `/api/meta/pollutants` | 监测因子清单与限值 |
 | GET | `/api/meta/options` | 枚举选项(监测点、区域、状态、类型等) |
 | GET | `/api/meta/overview` | 首页概览聚合数据 |
+| GET | `/api/auth/me` | 当前登录人及其生效中的可录入范围 |
+| GET | `/api/auth/users` | 人员清单(顶栏切换登录人 / 选择代录对象) |
+| GET/POST | `/api/admin/positions` | 【管理员】岗位查询 / 新增 |
+| PUT | `/api/admin/positions/{id}` | 【管理员】岗位更新(启用/停用) |
+| GET/POST | `/api/admin/positions/{id}/scopes` | 【管理员】口径版本列表 / 登记新生效范围(带生效时间) |
+| GET/POST | `/api/admin/users` | 【管理员】人员查询 / 新增 |
+| PUT | `/api/admin/users/{id}` | 【管理员】调岗 / 停用(立即生效) |
 | GET/POST | `/api/stations` | 台账分页查询 / 新增 |
 | GET/PUT/DELETE | `/api/stations/{id}` | 台账详情(含分因子统计) / 更新 / 删除(级联) |
 | GET | `/api/stations/options` | 下拉选项(监测点、区域) |
 | GET | `/api/stations/summary` | 台账规模统计 |
 | GET | `/api/measurements` | 监测数据分页查询(含筛选汇总) |
-| POST | `/api/measurements/entries` | **成组录入**: 一个监测点 + 一个时刻 + 多个因子 |
-| POST | `/api/measurements/preview` | 超标校验预览(不写库) |
+| POST | `/api/measurements/entries` | **成组录入**: 需登录, 按岗位口径鉴权(点位+因子) |
+| POST | `/api/measurements/preview` | 超标校验预览(不写库, 同样鉴权) |
+| GET | `/api/measurements/entry-context` | 当前登录人的可录入点位/因子/代录对象 |
 | DELETE | `/api/measurements/{id}` | 删除监测数据 |
-| GET | `/api/measurements/export` | 按条件导出 CSV |
+| GET | `/api/measurements/export` | 按条件导出 CSV(含名义录入人/代录标记/提交时间) |
 | GET | `/api/exceedances` | 超标记录查询(含筛选统计) |
 | GET | `/api/exceedances/{id}` | 超标记录详情(含关联监测数据) |
 | PATCH | `/api/exceedances/{id}` | 单条标注 |
@@ -169,16 +179,31 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 | GET | `/api/query/statistics` | 聚合统计(`group_by` + `metric`) |
 | GET | `/api/query/export` | 查询结果导出 CSV |
 
-`POST /api/measurements/entries` 请求示例:
+### 登录身份与录入权限
+
+- 前端在顶栏选择登录人员后, 后续请求自动携带 `X-Operator-Token: <token>` 头;
+  未携带或令牌无效时, 录入/预览及管理接口返回 `401 UNAUTHORIZED`。
+- `POST /api/measurements/entries` 与 `/preview` 每次都按**当前登录账号 → 所属岗位 →
+  当前时刻已生效的口径版本**实时校验, 不做缓存:
+  - 账号停用、岗位停用 → `403 PERMISSION_DENIED`(下一次提交立即收紧);
+  - 调岗 → 立即按新岗位口径校验;
+  - 监测点不在范围内 → 403, 提示具体点位; 因子不在范围内 → 403, 提示具体因子。
+- **录入人 / 提交时间 / 数据来源由服务端自动带出**, 请求体里的 `recorder`、`data_source` 一律忽略;
+  页面手工录入的 `data_source` 固定为 `manual`。
+- 请求体传 `recorder_id` 指定他人即**代录**: `recorder` 落名义录入人,
+  `operator_name` 落实际提交登录人, `is_proxy=true`; 不传则名义录入人即本人。
+- 范围调整通过 `POST /api/admin/positions/{id}/scopes` 登记**新版本 + 生效时间**完成,
+  旧版本保留; 监测数据写入时快照 `position_id / scope_id`, 覆盖更新也不改变首次归属。
+
+`POST /api/measurements/entries` 请求示例 (实际提交人、提交时间、数据来源无需也无法传入):
 
 ```json
 {
   "station_id": 1,
   "measured_at": "2026-09-14 10:00",
   "period": "hourly",
-  "data_source": "manual",
-  "recorder": "王敏",
-  "remark": "在线设备人工比对",
+  "recorder_id": 5,
+  "remark": "在线设备人工比对; 李静代赵宇录入",
   "overwrite": false,
   "entries": [
     { "pollutant": "PM25", "value": 82.5 },
@@ -188,7 +213,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 }
 ```
 
-响应会返回本次新增/更新条数、超标记录、重复项与逐因子判定结果:
+响应中 `submitted_by` 回传本次提交的审计归属, 越权时返回 `403` 并在 `message` 中说明原因:
 
 ```json
 {
@@ -204,11 +229,20 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 
 | 表 | 关键字段 | 说明 |
 | --- | --- | --- |
+| `positions` | `code` `name` `is_active` | 岗位 |
+| `position_scopes` | `position_id` `effective_from` `all_stations` `all_pollutants` | 岗位录入口径版本, 同岗位可多版, 按提交时刻取已生效的最新版 |
+| `scope_stations` / `scope_pollutants` | `scope_id` `station_id` / `pollutant` | 每版口径允许的点位与因子 |
+| `users` | `username` `name` `token` `is_active` `is_admin` `position_id` | 录入账号; 停用/调岗实时影响可录入范围 |
 | `stations` | `code`(唯一) `name` `area` `station_type` `status` `longitude/latitude` `installed_at` | 监测点台账 |
-| `measurements` | `station_id` `pollutant` `period` `value` `limit_value` `exceed_ratio` `is_exceeded` `measured_at` `data_source` `recorder` | 监测数据; `(station_id, pollutant, period, measured_at)` 唯一 |
+| `measurements` | `station_id` `pollutant` `period` `value` `limit_value` `exceed_ratio` `is_exceeded` `measured_at` `data_source` `recorder`; 审计列 `operator_id/operator_name`(实际提交人) `recorder_id`(名义录入人) `is_proxy`(代录) `submitted_at`(提交时间) `position_id/scope_id`(登记当时口径快照) | 监测数据; `(station_id, pollutant, period, measured_at)` 唯一 |
 | `exceedances` | `measurement_id`(唯一) `status` `level` `note` `annotator` `annotated_at` | 超标记录与人工标注 |
 
 删除监测点会级联清理其监测数据与超标记录; 删除监测数据会同时删除对应超标记录。
+
+> 升级注意: 本次新增了岗位/人员表与监测数据审计列, 旧的本地 SQLite 库需要重置
+> (`flask reset-db` 或删除 `backend/instance/air_monitor.db` 后重启)。
+> 重置后种子数据包含演示账号, 令牌形如 `demo-token-<username>`(如 `demo-token-lijing`、
+> `demo-token-admin`), 可在顶栏直接切换。
 
 ## 配置项
 
@@ -228,7 +262,7 @@ docker compose -f docker-compose.yml -f docker-compose.postgres.yml up -d --buil
 
 ```bash
 cd backend
-python -m pytest -q          # 43 个用例: 台账 CRUD/级联、录入与超标判定、标注规则、查询统计与导出、元数据接口
+python -m pytest -q          # 66 个用例: 台账/录入与超标判定、岗位权限(越权/代录/口径生效/停用调岗)、标注、查询导出、元数据
 
 cd frontend
 npm run build                # 生产构建校验

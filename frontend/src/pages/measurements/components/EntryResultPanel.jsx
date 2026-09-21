@@ -136,26 +136,35 @@ export default function EntryResultPanel({ result, summary, onClose }) {
               : ''}
           </Alert>
         ) : (
-          <div className="stat-grid">
-            <div className="stat-card">
-              <div className="stat-label">新增</div>
-              <div className="stat-value success-text">{payload.summary.created_count}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">更新</div>
-              <div className="stat-value">{payload.summary.updated_count}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">超标</div>
-              <div className="stat-value danger-text">{payload.summary.exceeded_count}</div>
-            </div>
-            <div className="stat-card">
-              <div className="stat-label">跳过重复</div>
-              <div className="stat-value" style={{ color: 'var(--warning)' }}>
-                {payload.summary.duplicate_count}
+          <>
+            {payload.submitted_by ? (
+              <Alert tone={payload.submitted_by.is_proxy ? 'warning' : 'info'}>
+                {payload.submitted_by.is_proxy
+                  ? `代录: 名义录入人 ${payload.submitted_by.recorder_name}, 实际提交人 ${payload.submitted_by.operator_name}; 提交时间 ${formatDateTime(payload.submitted_by.submitted_at)}`
+                  : `提交人 ${payload.submitted_by.operator_name}; 提交时间 ${formatDateTime(payload.submitted_by.submitted_at)}`}
+              </Alert>
+            ) : null}
+            <div className="stat-grid">
+              <div className="stat-card">
+                <div className="stat-label">新增</div>
+                <div className="stat-value success-text">{payload.summary.created_count}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">更新</div>
+                <div className="stat-value">{payload.summary.updated_count}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">超标</div>
+                <div className="stat-value danger-text">{payload.summary.exceeded_count}</div>
+              </div>
+              <div className="stat-card">
+                <div className="stat-label">跳过重复</div>
+                <div className="stat-value" style={{ color: 'var(--warning)' }}>
+                  {payload.summary.duplicate_count}
+                </div>
               </div>
             </div>
-          </div>
+          </>
         )}
 
         <ResultTable columns={columns} rows={rows} />

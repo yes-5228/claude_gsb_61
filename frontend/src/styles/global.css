@@ -280,6 +280,11 @@ ul.plain li { margin-bottom: 5px; }
 .kv dt { color: var(--text-muted); }
 .kv dd { margin: 0; }
 
+.select-sm { padding: 4px 8px; font-size: 12px; min-height: auto; height: auto; }
+.data-table tr.selected-row { background: var(--primary-soft, rgba(37, 99, 235, 0.08)); }
+.checkbox-group { max-height: 220px; overflow-y: auto; }
+.topbar-meta { gap: 14px; }
+
 @media (max-width: 900px) {
   .app { flex-direction: column; }
   .sidebar { width: 100%; flex: none; flex-direction: row; overflow-x: auto; align-items: center; padding: 10px; }

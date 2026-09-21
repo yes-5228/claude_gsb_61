@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { getToken } from './auth.js'
 
 const baseURL = import.meta.env.VITE_API_BASE || '/api'
 
@@ -13,6 +14,12 @@ export class ApiError extends Error {
 }
 
 const http = axios.create({ baseURL, timeout: 20000 })
+
+http.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers['X-Operator-Token'] = token
+  return config
+})
 
 http.interceptors.response.use(
   (response) => response.data,
