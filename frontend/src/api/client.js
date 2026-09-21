@@ -14,14 +14,39 @@ export class ApiError extends Error {
 
 const http = axios.create({ baseURL, timeout: 20000 })
 
+export const TOKEN_KEY = 'aq_auth_token'
+
+export function getToken() {
+  return window.localStorage.getItem(TOKEN_KEY) || ''
+}
+
+export function setToken(token) {
+  if (token) window.localStorage.setItem(TOKEN_KEY, token)
+  else window.localStorage.removeItem(TOKEN_KEY)
+}
+
+export const authEvent = new EventTarget()
+
+http.interceptors.request.use((config) => {
+  const token = getToken()
+  if (token) config.headers.Authorization = `Bearer ${token}`
+  return config
+})
+
 http.interceptors.response.use(
   (response) => response.data,
   (error) => {
     const payload = error.response?.data?.error
+    const status = error.response?.status
+    // 未登录 / 失效 / 被停用: 清除令牌并广播, 由全局守卫跳转登录页
+    if (status === 401 && getToken() && !error.config?.url?.includes('/auth/login')) {
+      setToken('')
+      authEvent.dispatchEvent(new CustomEvent('unauthorized'))
+    }
     if (payload) {
       return Promise.reject(
         new ApiError(payload.message || '请求失败', {
-          status: error.response.status,
+          status,
           fields: payload.fields,
           code: payload.code
         })

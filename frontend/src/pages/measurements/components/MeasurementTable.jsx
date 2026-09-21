@@ -46,7 +46,22 @@ export default function MeasurementTable({ rows, loading, onDelete }) {
       title: '来源',
       render: (row) => <Tag tone={DATA_SOURCE_TONE[row.data_source]}>{row.data_source_label}</Tag>
     },
-    { key: 'recorder', title: '录入人', render: (row) => row.recorder || '-' },
+    {
+      key: 'recorder',
+      title: '录入人 / 提交',
+      render: (row) => (
+        <div>
+          <div>
+            {row.recorder || '-'}
+            {row.is_proxy ? <Tag tone="warning" style={{ marginLeft: 6 }}>代录</Tag> : null}
+          </div>
+          <div className="small muted">
+            {row.is_proxy && row.operator_name ? `操作人 ${row.operator_name} · ` : ''}
+            {formatDateTime(row.submitted_at)}
+          </div>
+        </div>
+      )
+    },
     {
       key: 'actions',
       title: '操作',

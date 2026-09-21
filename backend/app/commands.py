@@ -2,7 +2,7 @@
 import click
 
 from .extensions import db
-from .models import Exceedance, Measurement, Station
+from .models import Exceedance, Measurement, Position, Station, User
 
 
 def register_commands(app):
@@ -11,6 +11,40 @@ def register_commands(app):
         """Create database tables."""
         db.create_all()
         click.echo("数据库表已创建")
+
+    @app.cli.command("ensure-admin")
+    @click.option("--username", default="admin", show_default=True)
+    @click.option("--password", default="air123456", show_default=True)
+    @click.option("--name", default="系统管理员", show_default=True)
+    def ensure_admin(username, password, name):
+        """Create the administrator account (and its position) when absent."""
+        position = Position.query.filter_by(code="admin").first()
+        if position is None:
+            position = Position(code="admin", name="系统管理员", is_admin=True, can_proxy=True)
+            db.session.add(position)
+            db.session.flush()
+        user = User.query.filter_by(username=username).first()
+        if user is None:
+            user = User(username=username, display_name=name, position=position, active=True)
+            user.set_password(password)
+            db.session.add(user)
+            db.session.commit()
+            click.echo("管理员已创建: %s / %s" % (username, password))
+        else:
+            click.echo("管理员账号已存在: %s(如需改密请用 set-password)" % username)
+
+    @app.cli.command("set-password")
+    @click.argument("username")
+    @click.argument("password")
+    def set_password(username, password):
+        """Reset a user's login password."""
+        user = User.query.filter_by(username=username).first()
+        if user is None:
+            click.echo("用户不存在: %s" % username)
+            raise SystemExit(1)
+        user.set_password(password)
+        db.session.commit()
+        click.echo("已重置 %s 的登录密码" % username)
 
     @app.cli.command("seed")
     @click.option("--days", default=5, show_default=True, help="生成最近多少天的数据")
@@ -45,10 +79,12 @@ def register_commands(app):
     def stats():
         """Print a short record summary."""
         click.echo(
-            "监测点 %d 个 / 监测数据 %d 条 / 超标记录 %d 条"
+            "监测点 %d 个 / 监测数据 %d 条 / 超标记录 %d 条 / 账号 %d 个 / 岗位 %d 个"
             % (
                 Station.query.count(),
                 Measurement.query.count(),
                 Exceedance.query.count(),
+                User.query.count(),
+                Position.query.count(),
             )
         )

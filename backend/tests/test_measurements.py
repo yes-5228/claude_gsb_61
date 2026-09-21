@@ -18,7 +18,12 @@ def test_batch_entry_creates_records_and_flags_exceedance(client, station, entry
     assert stored.limit_value == 500.0
     assert stored.exceed_ratio == 1.8
     assert stored.unit == "μg/m³"
-    assert stored.recorder == "测试员"
+    # 录入人由服务端按登录账号带出, 请求体中的 recorder 被忽略
+    assert stored.recorder == "管理员"
+    assert stored.operator_name == "管理员"
+    assert stored.is_proxy is False
+    assert stored.submitted_at is not None
+    assert stored.data_source == "manual"
 
 
 def test_duplicate_entry_is_reported_as_conflict(client, station, entry_payload):
@@ -57,7 +62,6 @@ def test_preview_validates_without_writing(client, station, entry_payload):
         period="daily",
         entries=[{"pollutant": "PM25", "value": 90.0}, {"pollutant": "O3", "value": 100.0}],
     )
-    payload.pop("station_id")
     response = client.post("/api/measurements/preview", json=payload)
     assert response.status_code == 200
     body = response.get_json()
@@ -126,7 +130,10 @@ def test_entry_context_exposes_form_options(client, station):
     body = client.get("/api/measurements/entry-context").get_json()
     assert body["stations"][0]["code"] == "TEST-001"
     assert {item["value"] for item in body["periods"]} == {"hourly", "daily"}
-    assert {item["value"] for item in body["data_sources"]} >= {"manual", "device"}
+    # 手工录入固定为"手工录入", 不再由前端自选设备上传等来源
+    assert [item["value"] for item in body["data_sources"]] == ["manual"]
+    assert body["user"]["username"] == "admin"
+    assert body["can_proxy"] is True
 
 
 def test_export_measurements_csv(client, station, entry_payload):

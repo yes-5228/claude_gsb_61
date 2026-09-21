@@ -36,6 +36,18 @@ class ConflictError(ApiError):
         super().__init__(message, status_code=409, code="CONFLICT")
 
 
+class AuthenticationError(ApiError):
+    def __init__(self, message="未登录或登录已失效, 请重新登录"):
+        super().__init__(message, status_code=401, code="UNAUTHORIZED")
+
+
+class PermissionDeniedError(ApiError):
+    """越权访问 (含绕过页面直连接口提交)。"""
+
+    def __init__(self, message="无权执行该操作", code="FORBIDDEN", fields=None):
+        super().__init__(message, status_code=403, code=code, fields=fields)
+
+
 def register_error_handlers(app):
     @app.errorhandler(ApiError)
     def _handle_api_error(error):

@@ -1,11 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { createEntries, previewEntries } from '../../../api/measurements.js'
+import { createEntries, entryContext, previewEntries } from '../../../api/measurements.js'
 import { SectionCard } from '../../../components/common/Card.jsx'
 import { Checkbox, Field, Input, Select } from '../../../components/common/FormField.jsx'
 import { Alert, Loading } from '../../../components/common/Feedback.jsx'
 import Tag from '../../../components/common/Tag.jsx'
 import { useToast } from '../../../components/common/ToastProvider.jsx'
-import { usePollutantMeta, useStationOptions } from '../../../hooks/useOptions.js'
 import { formatNumber, toDateTimeInput } from '../../../utils/format.js'
 
 const PERIODS = [
@@ -13,23 +12,26 @@ const PERIODS = [
   { value: 'daily', label: '日均值' }
 ]
 
-const DATA_SOURCES = [
-  { value: 'manual', label: '手工录入' },
-  { value: 'device', label: '设备上传' },
-  { value: 'import', label: '历史导入' }
-]
+const POLLUTANT_LIMITS = {
+  PM25: { daily: 75, hourly: null, unit: 'μg/m³', label: 'PM2.5' },
+  PM10: { daily: 150, hourly: null, unit: 'μg/m³', label: 'PM10' },
+  SO2: { daily: 150, hourly: 500, unit: 'μg/m³', label: 'SO₂' },
+  NO2: { daily: 80, hourly: 200, unit: 'μg/m³', label: 'NO₂' },
+  CO: { daily: 4, hourly: 10, unit: 'mg/m³', label: 'CO' },
+  O3: { daily: 160, hourly: 200, unit: 'μg/m³', label: 'O₃' }
+}
 
 export default function EntryForm({ onPreview, onSubmitted }) {
   const toast = useToast()
-  const { data: stationData, loading: stationLoading, error: stationError } = useStationOptions()
-  const { data: pollutantData, loading: pollutantLoading } = usePollutantMeta()
+  const [context, setContext] = useState(null)
+  const [contextError, setContextError] = useState(null)
+  const [contextLoading, setContextLoading] = useState(true)
 
   const [form, setForm] = useState({
     station_id: '',
     measured_at: toDateTimeInput(),
     period: 'hourly',
-    data_source: 'manual',
-    recorder: '',
+    on_behalf_of_id: '',
     remark: '',
     overwrite: false
   })
@@ -39,17 +41,37 @@ export default function EntryForm({ onPreview, onSubmitted }) {
   const [busy, setBusy] = useState(null)
   const [evaluations, setEvaluations] = useState({})
 
-  const pollutants = pollutantData?.items ?? []
+  const loadContext = useCallback(async () => {
+    setContextLoading(true)
+    setContextError(null)
+    try {
+      setContext(await entryContext())
+    } catch (error) {
+      setContextError(error)
+    } finally {
+      setContextLoading(false)
+    }
+  }, [])
 
   useEffect(() => {
-    if (!form.station_id && stationData?.items?.length) {
-      setForm((prev) => ({ ...prev, station_id: String(stationData.items[0].id) }))
+    loadContext()
+  }, [loadContext])
+
+  const stations = context?.stations ?? []
+  const allowedPollutants = context?.pollutant_codes ?? []
+  const pollutants = allowedPollutants
+    .map((code) => ({ code, ...POLLUTANT_LIMITS[code] }))
+    .filter((item) => item.label)
+
+  useEffect(() => {
+    if (!form.station_id && stations.length) {
+      setForm((prev) => ({ ...prev, station_id: String(stations[0].id) }))
     }
-  }, [stationData, form.station_id])
+  }, [stations, form.station_id])
 
   const limitHint = useCallback(
     (pollutant) => {
-      const limit = pollutant.limits?.[form.period]
+      const limit = POLLUTANT_LIMITS[pollutant.code]?.[form.period]
       if (limit === null || limit === undefined) return '该周期未设限值, 仅记录数值'
       return `限值 ${formatNumber(limit)} ${pollutant.unit}`
     },
@@ -57,10 +79,7 @@ export default function EntryForm({ onPreview, onSubmitted }) {
   )
 
   const filled = useMemo(
-    () =>
-      Object.entries(values).filter(
-        ([, raw]) => raw !== '' && raw !== null && raw !== undefined
-      ),
+    () => Object.entries(values).filter(([, raw]) => raw !== '' && raw !== null && raw !== undefined),
     [values]
   )
 
@@ -100,11 +119,17 @@ export default function EntryForm({ onPreview, onSubmitted }) {
     return true
   }
 
+  const basePayload = () => ({
+    station_id: Number(form.station_id),
+    measured_at: form.measured_at,
+    period: form.period
+  })
+
   const runPreview = async () => {
     if (!validate()) return
     setBusy('preview')
     try {
-      const result = await previewEntries({ period: form.period, entries })
+      const result = await previewEntries({ ...basePayload(), entries })
       const map = {}
       result.results.forEach((item) => {
         map[item.pollutant] = item
@@ -117,6 +142,7 @@ export default function EntryForm({ onPreview, onSubmitted }) {
         toast.success('校验完成: 所有因子均未超过限值')
       }
     } catch (error) {
+      // 越权等错误: 逐字段标红 + 完整提示
       setErrors(error.fields || {})
       setMessage(error.message)
       toast.error(error.message)
@@ -130,12 +156,9 @@ export default function EntryForm({ onPreview, onSubmitted }) {
     setBusy('submit')
     try {
       const result = await createEntries({
-        station_id: Number(form.station_id),
-        measured_at: form.measured_at,
-        period: form.period,
-        data_source: form.data_source,
-        recorder: form.recorder || null,
+        ...basePayload(),
         remark: form.remark || null,
+        on_behalf_of_id: form.on_behalf_of_id ? Number(form.on_behalf_of_id) : null,
         overwrite: form.overwrite,
         entries
       })
@@ -147,10 +170,13 @@ export default function EntryForm({ onPreview, onSubmitted }) {
       setValues({})
       onSubmitted?.(result)
       const written = result.summary.created_count + result.summary.updated_count
+      const who = result.submission?.is_proxy
+        ? `(代 ${result.submission.recorder}, 操作人 ${result.submission.operator})`
+        : ''
       if (result.summary.exceeded_count > 0) {
-        toast.warning(`写入 ${written} 条数据, 其中 ${result.summary.exceeded_count} 项超标已生成待标注记录`)
+        toast.warning(`写入 ${written} 条数据${who}, 其中 ${result.summary.exceeded_count} 项超标已生成待标注记录`)
       } else {
-        toast.success(`录入成功, 共写入 ${written} 条数据`)
+        toast.success(`录入成功, 共写入 ${written} 条数据${who}`)
       }
     } catch (error) {
       setErrors(error.fields || {})
@@ -161,13 +187,23 @@ export default function EntryForm({ onPreview, onSubmitted }) {
     }
   }
 
-  if (stationLoading || pollutantLoading) {
+  if (contextLoading) {
     return (
       <SectionCard title="监测数据录入">
-        <Loading text="正在加载监测点与监测因子..." />
+        <Loading text="正在加载您岗位可录入的监测点与因子..." />
       </SectionCard>
     )
   }
+
+  const me = context?.user
+  const scope = context?.user?.scope
+  const scopeText = me?.is_admin
+    ? '管理员岗位, 全部监测点与因子'
+    : scope
+      ? `${scope.all_stations ? '全部监测点' : `${scope.station_codes.length} 个授权监测点`} · ${
+          scope.all_pollutants ? '全部因子' : `${scope.pollutant_codes.length} 个授权因子`
+        }`
+      : ''
 
   return (
     <SectionCard
@@ -176,8 +212,16 @@ export default function EntryForm({ onPreview, onSubmitted }) {
       actions={<Tag tone="primary">{form.period === 'hourly' ? '小时均值' : '日均值'}</Tag>}
     >
       <div className="stack">
-        {stationError ? <Alert tone="error">{stationError.message}</Alert> : null}
+        {contextError ? <Alert tone="error">{contextError.message}</Alert> : null}
         {message ? <Alert tone="error">{message}</Alert> : null}
+
+        <Alert tone="info">
+          当前录入人: <strong>{me?.display_name}</strong>
+          {me?.position_name ? `（${me.position_name}）` : ''} · 可录范围: {scopeText}
+          <div className="small muted" style={{ marginTop: 2 }}>
+            录入人、提交时间与数据来源(手工录入)由系统自动记录, 无需填写; 页面可选点位/因子已按岗位范围收窄。
+          </div>
+        </Alert>
 
         <div className="form-grid">
           <Field label="监测点" required error={errors.station_id}>
@@ -186,7 +230,7 @@ export default function EntryForm({ onPreview, onSubmitted }) {
               onChange={setField('station_id')}
               invalid={Boolean(errors.station_id)}
               placeholder="请选择监测点"
-              options={(stationData?.items ?? []).map((item) => ({
+              options={stations.map((item) => ({
                 value: String(item.id),
                 label: `${item.code} ${item.name} (${item.area})`
               }))}
@@ -203,11 +247,25 @@ export default function EntryForm({ onPreview, onSubmitted }) {
           <Field label="数据周期" required>
             <Select value={form.period} onChange={setField('period')} options={PERIODS} />
           </Field>
+          {context?.can_proxy ? (
+            <Field label="代录(实际录入人)" hint="留空表示本人录入; 选择后数据归属被代录人, 操作人记为您">
+              <Select
+                value={form.on_behalf_of_id}
+                onChange={setField('on_behalf_of_id')}
+                placeholder="本人录入"
+                options={(context.proxy_targets || []).map((item) => ({
+                  value: String(item.value),
+                  label: item.label
+                }))}
+              />
+            </Field>
+          ) : (
+            <Field label="代录" hint="您的岗位未开通代录权限">
+              <Input value="无代录权限" disabled />
+            </Field>
+          )}
           <Field label="数据来源">
-            <Select value={form.data_source} onChange={setField('data_source')} options={DATA_SOURCES} />
-          </Field>
-          <Field label="录入人">
-            <Input value={form.recorder} onChange={setField('recorder')} placeholder="如: 张三" />
+            <Input value="手工录入(系统自动带出)" disabled />
           </Field>
           <Field label="备注">
             <Input value={form.remark} onChange={setField('remark')} placeholder="选填" />
@@ -217,39 +275,43 @@ export default function EntryForm({ onPreview, onSubmitted }) {
         <div className="card" style={{ boxShadow: 'none' }}>
           <div className="card-header">
             <h3>因子浓度</h3>
-            <span className="hint">留空的因子不会写入</span>
+            <span className="hint">仅展示岗位授权因子, 留空的因子不会写入</span>
           </div>
           <div className="card-body">
             {errors.entries ? <Alert tone="error">{errors.entries}</Alert> : null}
-            <div className="form-grid">
-              {pollutants.map((pollutant) => {
-                const evaluation = evaluations[pollutant.code]
-                return (
-                  <Field
-                    key={pollutant.code}
-                    label={`${pollutant.label} (${pollutant.unit})`}
-                    error={errors[pollutant.code]}
-                    hint={limitHint(pollutant)}
-                  >
-                    <div className="inline" style={{ flexWrap: 'nowrap' }}>
-                      <Input
-                        type="number"
-                        step="0.01"
-                        min="0"
-                        value={values[pollutant.code] ?? ''}
-                        onChange={setValue(pollutant.code)}
-                        invalid={Boolean(errors[pollutant.code])}
-                        placeholder="--"
-                      />
-                      {evaluation?.exceeded ? <Tag tone="danger">超标</Tag> : null}
-                      {evaluation && !evaluation.exceeded && evaluation.applicable ? (
-                        <Tag tone="success">达标</Tag>
-                      ) : null}
-                    </div>
-                  </Field>
-                )
-              })}
-            </div>
+            {pollutants.length === 0 ? (
+              <Alert tone="warning">您当前岗位未开放任何可录入因子, 请联系管理员调整岗位范围。</Alert>
+            ) : (
+              <div className="form-grid">
+                {pollutants.map((pollutant) => {
+                  const evaluation = evaluations[pollutant.code]
+                  return (
+                    <Field
+                      key={pollutant.code}
+                      label={`${pollutant.label} (${pollutant.unit})`}
+                      error={errors[pollutant.code]}
+                      hint={limitHint(pollutant)}
+                    >
+                      <div className="inline" style={{ flexWrap: 'nowrap' }}>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          value={values[pollutant.code] ?? ''}
+                          onChange={setValue(pollutant.code)}
+                          invalid={Boolean(errors[pollutant.code])}
+                          placeholder="--"
+                        />
+                        {evaluation?.exceeded ? <Tag tone="danger">超标</Tag> : null}
+                        {evaluation && !evaluation.exceeded && evaluation.applicable ? (
+                          <Tag tone="success">达标</Tag>
+                        ) : null}
+                      </div>
+                    </Field>
+                  )
+                })}
+              </div>
+            )}
           </div>
         </div>
 
@@ -265,10 +327,10 @@ export default function EntryForm({ onPreview, onSubmitted }) {
         </div>
 
         <div className="inline">
-          <button type="button" className="btn" onClick={runPreview} disabled={busy !== null}>
+          <button type="button" className="btn" onClick={runPreview} disabled={busy !== null || !stations.length}>
             {busy === 'preview' ? '校验中...' : '超标校验预览'}
           </button>
-          <button type="button" className="btn btn-primary" onClick={submit} disabled={busy !== null}>
+          <button type="button" className="btn btn-primary" onClick={submit} disabled={busy !== null || !stations.length}>
             {busy === 'submit' ? '提交中...' : '提交录入'}
           </button>
           <span className="small muted">

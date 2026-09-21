@@ -27,7 +27,18 @@ class Measurement(TimestampMixin, db.Model):
     is_exceeded = db.Column(db.Boolean, nullable=False, default=False, index=True)
     measured_at = db.Column(db.DateTime, nullable=False, index=True)
     data_source = db.Column(db.String(16), nullable=False, default="manual")
+    # recorder_*: 数据归属的录入人; 代录时归属被代录人, operator_* 记实际操作人
+    recorder_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
     recorder = db.Column(db.String(64))
+    operator_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True, index=True)
+    operator_name = db.Column(db.String(64))
+    is_proxy = db.Column(db.Boolean, nullable=False, default=False)
+    submitted_at = db.Column(db.DateTime, nullable=True)
+    # 登记当时生效的岗位范围口径快照, 范围调整后历史归属不变
+    scope_version_id = db.Column(
+        db.Integer, db.ForeignKey("position_scope_versions.id"), nullable=True
+    )
+    scope_position_id = db.Column(db.Integer, nullable=True, index=True)
     remark = db.Column(db.Text)
 
     station = db.relationship("Station", back_populates="measurements")
@@ -59,7 +70,14 @@ class Measurement(TimestampMixin, db.Model):
             "measured_at": iso(self.measured_at),
             "data_source": self.data_source,
             "data_source_label": label_of(DATA_SOURCE_LABELS, self.data_source),
+            "recorder_id": self.recorder_id,
             "recorder": self.recorder,
+            "operator_id": self.operator_id,
+            "operator_name": self.operator_name,
+            "is_proxy": bool(self.is_proxy),
+            "submitted_at": iso(self.submitted_at) if self.submitted_at else iso(self.created_at),
+            "scope_version_id": self.scope_version_id,
+            "scope_position_id": self.scope_position_id,
             "remark": self.remark,
             "created_at": iso(self.created_at),
             "updated_at": iso(self.updated_at),

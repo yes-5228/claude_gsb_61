@@ -1,8 +1,10 @@
 import { useCallback } from 'react'
 import { health } from '../../api/meta.js'
 import { useAsyncData } from '../../hooks/useAsyncData.js'
+import { useAuth } from '../../auth/AuthContext.jsx'
 
 export default function TopBar({ item }) {
+  const { user, logout } = useAuth()
   const loader = useCallback(() => health(), [])
   const { data, error } = useAsyncData(loader)
   const online = !error && data?.status === 'ok'
@@ -29,6 +31,17 @@ export default function TopBar({ item }) {
         </span>
         <span>{data?.limit_policy ?? 'GB 3095-2012 二级标准'}</span>
         <span>{data?.timezone ?? 'Asia/Shanghai'}</span>
+        {user ? (
+          <span className="topbar-user">
+            <strong>{user.display_name}</strong>
+            <span className="muted small">
+              {user.is_admin ? '系统管理员' : user.position_name}
+            </span>
+            <button type="button" className="btn btn-sm" onClick={logout}>
+              退出登录
+            </button>
+          </span>
+        ) : null}
       </div>
     </header>
   )

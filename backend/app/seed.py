@@ -3,7 +3,8 @@ import random
 from datetime import date, datetime, timedelta
 
 from .extensions import db
-from .models import Exceedance, Measurement, Station
+from .models import Exceedance, Measurement, Position, PositionScopeVersion, Station, User
+from .models.identity import DEFAULT_PASSWORD
 
 DEMO_STATIONS = [
     {
@@ -64,6 +65,69 @@ STATION_FACTOR = {
 HOURLY_POINTS = (2, 8, 14, 20)
 RECORDERS = ("李静", "王敏", "陈志强", "赵宇", "孙倩")
 
+# (账号, 姓名, 岗位编码, 是否启用)
+SEED_USERS = [
+    ("admin", "系统管理员", "admin", True),
+    ("lijing", "李静", "full", True),
+    ("wangmin", "王敏", "futian", True),
+    ("chenzq", "陈志强", "industrial", True),
+    ("zhaoyu", "赵宇", "particulate", True),
+    ("sunqian", "孙倩", "futian", False),  # 已停用, 便于演示停用后立即不能录入
+]
+
+
+def seed_identities():
+    """创建岗位(含带生效时间的范围版本)与登录账号, 返回 username -> User。"""
+    admin_pos = Position(code="admin", name="系统管理员", is_admin=True, can_proxy=True,
+                         remark="不做点位/因子限制, 可管理人员与范围")
+    full_pos = Position(code="full", name="综合录入岗", can_proxy=True,
+                        remark="全部点位、全部因子, 允许代录")
+    futian_pos = Position(code="futian", name="福田站点录入岗",
+                          remark="仅市民中心站, 全部因子")
+    industrial_pos = Position(code="industrial", name="工业园专项岗",
+                              remark="仅工业园站, 气态污染物因子")
+    particulate_pos = Position(code="particulate", name="颗粒物专项岗",
+                               remark="全部点位, 仅 PM2.5 / PM10")
+    db.session.add_all([admin_pos, full_pos, futian_pos, industrial_pos, particulate_pos])
+    db.session.flush()
+
+    now = datetime.now()
+    past = now - timedelta(days=400)  # 让历史演示数据也落在某个已生效版本内
+
+    def scope(position, stations=None, pollutants=None, all_stations=True,
+              all_pollutants=True, effective_from=None, remark=None):
+        version = PositionScopeVersion(
+            position_id=position.id, effective_from=effective_from or past,
+            all_stations=all_stations, all_pollutants=all_pollutants, remark=remark,
+        )
+        version.station_codes = stations or []
+        version.pollutant_codes = pollutants or []
+        db.session.add(version)
+        return version
+
+    scope(full_pos, all_stations=True, all_pollutants=True, remark="全量")
+    scope(futian_pos, stations=["SZ-AQ-001"], all_stations=False, all_pollutants=True,
+          remark="市民中心站")
+    scope(industrial_pos, stations=["SZ-AQ-005"],
+          pollutants=["SO2", "NO2", "CO", "O3"],
+          all_stations=False, all_pollutants=False, remark="气态污染物")
+    scope(particulate_pos, all_stations=True, pollutants=["PM25", "PM10"],
+          all_pollutants=False, remark="颗粒物两项")
+    db.session.flush()
+
+    position_by_code = {p.code: p for p in (admin_pos, full_pos, futian_pos,
+                                            industrial_pos, particulate_pos)}
+    users = {}
+    for username, display, pos_code, active in SEED_USERS:
+        user = User(username=username, display_name=display,
+                    position=position_by_code[pos_code], active=active,
+                    remark=("演示停用账号" if not active else None))
+        user.set_password(DEFAULT_PASSWORD)
+        db.session.add(user)
+        users[username] = user
+    db.session.commit()
+    return users
+
 
 def _value(pollutant, period, station_type, rng):
     base = POLLUTANT_BASE[pollutant] * STATION_FACTOR.get(station_type, 1.0)
@@ -78,6 +142,12 @@ def _value(pollutant, period, station_type, rng):
 def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
     """Generate demo stations and monitoring records through the normal service path."""
     from .services import measurement_service
+
+    users = seed_identities()
+    # 综合录入岗/管理员拥有全量范围, 用于批量生成历史演示数据
+    system_operator = users.get("admin")
+    recorder_users = [users[name] for name in ("lijing", "wangmin", "chenzq", "zhaoyu")
+                      if name in users]
 
     rng = rng or random.Random(20260914)
     created_stations = []
@@ -101,8 +171,8 @@ def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
                 measured_at=datetime(day.year, day.month, day.day, 0, 0),
                 period="daily",
                 entries=daily_entries,
+                operator=system_operator,
                 data_source="device",
-                recorder=rng.choice(recorder_pool),
                 remark="日均值自动汇总",
             )
             totals["measurements"] += result["summary"]["created_count"]
@@ -118,8 +188,8 @@ def seed_demo_data(days=5, rng=None, recorder_pool=RECORDERS):
                     measured_at=datetime(day.year, day.month, day.day, hour, 0),
                     period="hourly",
                     entries=hourly_entries,
+                    operator=system_operator,
                     data_source="manual",
-                    recorder=rng.choice(recorder_pool),
                 )
                 totals["measurements"] += result["summary"]["created_count"]
                 totals["exceedances"] += result["summary"]["exceeded_count"]

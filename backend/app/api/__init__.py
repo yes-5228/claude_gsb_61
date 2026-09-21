@@ -1,4 +1,6 @@
 """Blueprint registration."""
+from .admin import bp as admin_bp
+from .auth import bp as auth_bp
 from .exceedances import bp as exceedances_bp
 from .measurements import bp as measurements_bp
 from .meta import bp as meta_bp
@@ -6,6 +8,8 @@ from .query import bp as query_bp
 from .stations import bp as stations_bp
 
 BLUEPRINTS = (
+    (auth_bp, "/api/auth"),
+    (admin_bp, "/api/admin"),
     (meta_bp, "/api/meta"),
     (stations_bp, "/api/stations"),
     (measurements_bp, "/api/measurements"),
